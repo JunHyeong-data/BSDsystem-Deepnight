@@ -1,0 +1,46 @@
+# ============================================================
+# SGLDet 학습 설정 (MORAI 합성 데이터 기반)
+# 논문: Self-Guided Low-Light Object Detection (ICLR 2026)
+# ============================================================
+
+model:
+  yolo_weights: "yolov8m.pt"       # 사전학습 가중치
+  lambda_self: 0.01                 # L_self 가중치 (논문 최적값)
+  num_classes: 3                    # car, pedestrian, truck
+
+train:
+  epochs: 100
+  batch_size: 8
+  img_size: 640
+  num_workers: 4
+  device: "cuda"                    # "cuda" or "cpu"
+  optimizer: "SGD"                  # SGD (논문 기준)
+  lr: 0.001
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 10                 # 전체 epoch의 10%
+  scheduler: "cosine"               # cosine one-cycle
+
+  # 조도별 데이터 비율 (합산 1.0)
+  dusk_ratio: 0.5
+  night_ratio: 0.5
+
+pretrain:
+  # SCI / SDAP 사전학습 (SGLDet 학습 전 실행)
+  enhancer_epochs: 30
+  denoiser_epochs: 30
+  pretrain_lr: 0.0001
+
+data:
+  root: "data/morai"
+  train_split: 0.8
+  val_split: 0.2
+  # BSD 사각지대 영역 정의
+  bsd_lateral_min: 0.5              # 측방 최소 거리 (m)
+  bsd_lateral_max: 2.5              # 측방 최대 거리 (m)
+  bsd_rear_distance: 3.0            # 후방 B-필러 이후 거리 (m)
+
+eval:
+  conf_threshold: 0.25
+  iou_threshold: 0.45
+  save_dir: "experiments"
