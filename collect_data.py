@@ -50,12 +50,16 @@ BSD_CLASSES  = {0: "vehicle", 1: "pedestrian"}
 CLASS_COLORS = {0: (0, 200, 0), 1: (255, 128, 0)}
 
 
-# ── 카메라 파라미터 (camera_config.yaml 기준) ─────────────────────────────────
+# ── 카메라 파라미터 (camera_config.yaml 기준 — MORAI Fisheye Equidistant) ─────
+# 투영 모델 : Equidistant fisheye  (r = f · θ)
+# 왜곡 계수 : [k1,k2,k3,k4] = [0,0,0,0] (MORAI는 이상적 모델)
+# fx 산출  : (W/2) / (FOV_h/2 rad) = 640 / 1.5621 ≈ 409.73 (수평 FOV 179°)
 
-FX, FY  = 320.0, 320.0
+FX, FY  = 409.73, 409.73
 CX, CY  = 640.0, 360.0
 IMG_W   = 1280
 IMG_H   = 720
+FOV_HALF_RAD = np.deg2rad(89.5)   # 수평 FOV 179° / 2 — 광선 가시 한계
 
 MOUNT       = np.array([2.150, 0.900, 0.550])  # 우측 BSD 카메라 장착 위치 (m)
 PITCH_DEG   = 15.0
@@ -64,7 +68,8 @@ YAW_DEG     = 90.0
 SYNC_TOL    = 0.15    # 동기화 허용 오차 (초)
 MIN_AREA    = 800     # instance mask 최소 픽셀 면적
 
-FISHEYE_CX, FISHEYE_CY, FISHEYE_R = 640, 360, 350  # 어안 유효 ROI
+# Fisheye 유효 영역 반지름 = fx · θ_max ≈ 409.73 · 1.562 ≈ 640
+FISHEYE_CX, FISHEYE_CY, FISHEYE_R = 640, 360, 640
 
 
 # ── 카메라 변환 행렬 사전 계산 ───────────────────────────────────────────────
@@ -88,7 +93,16 @@ _R_V2C = _R_C2V.T
 
 def world_to_pixel(obj_pos, ego_pos, ego_heading_deg):
     """
-    ENU 월드 좌표 → 이미지 픽셀.
+    ENU 월드 좌표 → fisheye 이미지 픽셀 (Equidistant 모델).
+
+    투영 수식 (OpenCV cv2.fisheye 표준):
+        r_xy  = sqrt(X² + Y²)
+        θ     = atan2(r_xy, Z)              # 광축에서 광선까지 각도
+        u     = fx · (θ / r_xy) · X + cx    # k1..k4 = 0
+        v     = fy · (θ / r_xy) · Y + cy
+
+    핀홀 투영(u = fx·X/Z + cx)과 달리 cam[2] < 0 (광축 뒤)이라도
+    θ < FOV/2 인 한 가시. 단 θ > 89.5°(FOV 한계)면 None.
 
     MORAI heading 가정: 0 = North(북쪽), 시계방향 양수.
     # TODO: `ros2 topic echo /Ego_topic` 으로 실제 확인 필요.
@@ -107,11 +121,21 @@ def world_to_pixel(obj_pos, ego_pos, ego_heading_deg):
     ])
 
     cam = _R_V2C @ (veh - MOUNT)   # 카메라 프레임 (X=우, Y=하, Z=광축)
-    if cam[2] <= 0.1:
+    X, Y, Z = cam[0], cam[1], cam[2]
+
+    r_xy  = np.hypot(X, Y)
+    theta = np.arctan2(r_xy, Z)    # 광축에서 광선까지 각도 [0, π]
+
+    if theta > FOV_HALF_RAD:        # FOV 밖 (카메라 뒤편 포함)
         return None
 
-    u = int(FX * cam[0] / cam[2] + CX)
-    v = int(FY * cam[1] / cam[2] + CY)
+    if r_xy < 1e-9:                 # 광축 위의 점
+        u, v = int(CX), int(CY)
+    else:
+        f = theta / r_xy            # equidistant 스케일 (k=0)
+        u = int(FX * f * X + CX)
+        v = int(FY * f * Y + CY)
+
     return (u, v) if (0 <= u < IMG_W and 0 <= v < IMG_H) else None
 
 
