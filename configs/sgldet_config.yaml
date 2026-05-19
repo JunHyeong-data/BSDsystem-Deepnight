@@ -6,7 +6,7 @@
 model:
   yolo_weights: "yolov8m.pt"       # 사전학습 가중치
   lambda_self: 0.01                 # L_self 가중치 (논문 최적값)
-  num_classes: 3                    # car, pedestrian, truck
+  num_classes: 2                    # vehicle, pedestrian
 
 train:
   epochs: 100

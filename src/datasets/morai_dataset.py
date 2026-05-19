@@ -23,7 +23,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-CLASS_NAMES = ["car", "pedestrian", "truck"]
+CLASS_NAMES = ["vehicle", "pedestrian"]   # 0=vehicle, 1=pedestrian
 LIGHTING_CONDITIONS = ["dusk", "night"]
 
 
@@ -50,7 +50,9 @@ class MoraiDataset(Dataset):
               f"from {self.conditions}")
 
     def _load_samples(self, train_ratio: float) -> list:
-        all_samples = []
+        orig_map: dict[str, dict] = {}   # stem → sample
+        aug_map:  dict[str, list] = {}   # orig_stem → [aug samples]
+
         for cond in self.conditions:
             img_dir = self.root / cond / "images"
             lbl_dir = self.root / cond / "labels"
@@ -62,17 +64,36 @@ class MoraiDataset(Dataset):
                 if img_path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
                     continue
                 lbl_path = lbl_dir / (img_path.stem + ".txt")
-                all_samples.append({
+                sample = {
                     "img": img_path,
                     "lbl": lbl_path if lbl_path.exists() else None,
                     "condition": cond,
-                })
+                }
+                stem = img_path.stem
+                if "_aug" in stem:
+                    # "_aug0", "_aug1" ... → base stem
+                    base = "_aug".join(stem.split("_aug")[:-1])
+                    aug_map.setdefault(base, []).append(sample)
+                else:
+                    orig_map[stem] = sample
 
-        # 재현성 위한 시드 고정 셔플
-        random.Random(42).shuffle(all_samples)
+        # 원본 기준으로만 셔플 → train/val 분할
+        # aug 파일은 반드시 같은 원본의 split에 귀속 (데이터 누수 방지)
+        orig_list = list(orig_map.items())
+        random.Random(42).shuffle(orig_list)
 
-        n_train = int(len(all_samples) * train_ratio)
-        return all_samples[:n_train] if self.split == "train" else all_samples[n_train:]
+        n_train = int(len(orig_list) * train_ratio)
+        train_origs = orig_list[:n_train]
+        val_origs   = orig_list[n_train:]
+
+        if self.split == "train":
+            samples = [s for _, s in train_origs]
+            for stem, _ in train_origs:
+                samples.extend(aug_map.get(stem, []))
+            return samples
+        else:
+            # val 은 원본만 (증강 이미지 없음)
+            return [s for _, s in val_origs]
 
     def __len__(self) -> int:
         return len(self.samples)
