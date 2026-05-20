@@ -5,9 +5,9 @@ SGLDet 추론 전용 모듈 (Part B: 구동 단계)
 
 지원 모드:
   1. COCO 사전학습 (yolov8m.pt)
-     → BSD 관련 클래스만 필터링: car, truck, person, motorcycle
+     → BSD 관련 클래스만 필터링 후 2클래스(vehicle/pedestrian)로 매핑
   2. MORAI 파인튜닝 (best_model.pt)
-     → 4개 클래스 그대로 사용
+     → MORAI_CLASSES (2개) 그대로 사용
 """
 
 import torch
@@ -16,17 +16,19 @@ import cv2
 from ultralytics import YOLO
 
 
-# COCO 클래스 → BSD 관련 매핑
-# COCO 클래스 인덱스: person=0, car=2, bus=5, truck=7
+# MORAI 학습 모델 클래스 (2개)
+#   0 : vehicle      (NPC 차량 전체 — car/bus/truck 모두 포함)
+#   1 : pedestrian
+MORAI_CLASSES = ["vehicle", "pedestrian"]
+
+# COCO 사전학습 모델 → BSD 2클래스 매핑
+# COCO 인덱스: person=0, car=2, bus=5, truck=7  (bicycle/motorcycle 등은 제외)
 COCO_BSD_CLASSES = {
     0: "pedestrian",   # person
-    2: "car",
-    5: "truck",        # bus도 truck으로 묶음
-    7: "truck",
+    2: "vehicle",      # car
+    5: "vehicle",      # bus
+    7: "vehicle",      # truck
 }
-
-# MORAI 학습된 모델 클래스 (3개)
-MORAI_CLASSES = ["car", "pedestrian", "truck"]
 
 
 class SGLDetInference:

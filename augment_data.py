@@ -318,8 +318,8 @@ def apply_pipeline(
 
 # ── 시각화 ──────────────────────────────────────────────────────────────────
 
-CLASS_COLORS = {0: (0, 200, 0), 1: (255, 128, 0), 2: (0, 0, 255)}
-CLASS_NAMES  = {0: "car",       1: "pedestrian",   2: "truck"}
+CLASS_COLORS = {0: (0, 200, 0),  1: (255, 128, 0)}   # vehicle=초록, pedestrian=주황
+CLASS_NAMES  = {0: "vehicle",    1: "pedestrian"}
 
 
 def draw_boxes(img: np.ndarray, boxes: list[tuple]) -> np.ndarray:
