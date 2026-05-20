@@ -1,7 +1,7 @@
 """
 이미지 좌표 → 실제 공간 좌표 변환 (Part B: 구동 단계)
 ------------------------------------------------------
-MORAI 카메라 외부·내부 파라미터를 이용해
+MORAI Fisheye 카메라 (Equidistant 모델) 의 외부·내부 파라미터를 이용해
 탐지된 bbox 접지점을 차량 좌표계(m)로 변환하여
 BSD 사각지대 침범 여부를 판단.
 
@@ -15,12 +15,18 @@ BSD 사각지대 침범 여부를 판단.
   Z  : 상향(+)
   Yaw: 위에서 시계방향 (0=전방, 90=우측, 270=좌측)
 
-수학적 배경:
-  1. 픽셀 (u,v) → 정규화 카메라 방향 d_cam = [(u-cx)/fx, (v-cy)/fy, 1]
+수학적 배경 (Fisheye Equidistant):
+  1. 픽셀 (u,v) → 카메라 광선 단위벡터 d_cam :
+       du, dv  = u - cx, v - cy
+       r       = sqrt(du² + dv²)
+       θ       = r / fx          (등거리 역투영, k1..k4 = 0)
+       d_cam   = (sin θ · du/r,  sin θ · dv/r,  cos θ)
+       ※ 핀홀 정규화 좌표 (du/fx, dv/fy, 1)와 다름.
+         fisheye에선 큰 θ에서 위 둘이 발산함.
   2. 카메라→차량 회전행렬 R_c2v 로 방향 변환: d_veh = R_c2v @ d_cam
   3. 카메라 장착 위치 p = (mount_x, mount_y, mount_z)
   4. 지면 교차 (Z_veh=0): t = -p[2] / d_veh[2]
-  5. 교차점: (X_fwd, Y_lat) = (p[0]+t*d_veh[0], p[1]+t*d_veh[1])
+  5. 교차점: (X_fwd, Y_lat) = (p[0]+t·d_veh[0], p[1]+t·d_veh[1])
 """
 
 from __future__ import annotations
@@ -66,6 +72,11 @@ def _Rx(roll_deg: float) -> np.ndarray:
 #   Z_cam → X_veh (전방)
 #   X_cam → Y_veh (우측)
 #   Y_cam → -Z_veh (하향)
+#
+# ⚠️ 주의: MORAI 차량 프레임 (X=전방, Y=우측, Z=상향) 은 left-handed.
+#   따라서 이 행렬과 R_c2v 의 determinant 는 -1 (reflection 포함).
+#   cv2.Rodrigues / cv2.solvePnP 등 SO(3) 전용 API 에 R_c2v 를 그대로 넣으면
+#   round-trip 이 깨진다. 직접 수식(이 파일의 pixel_to_ground 등)을 쓸 것.
 _R_CAM_TO_BODY_BASE = np.array([
     [0,  0, 1],
     [1,  0, 0],
@@ -159,8 +170,12 @@ class CoordTransformer:
 
     def pixel_to_ground(self, u: float, v: float) -> tuple[float, float]:
         """
-        픽셀 좌표 (u, v) → 차량 좌표계 지면점 (X_fwd, Y_lat).
+        Fisheye 픽셀 좌표 (u, v) → 차량 좌표계 지면점 (X_fwd, Y_lat).
 
+        Equidistant 역투영 (OpenCV cv2.fisheye, k1..k4 = 0 가정):
+            r = sqrt((u-cx)² + (v-cy)²)
+            θ = r / fx
+            d_cam = (sin θ · (u-cx)/r,  sin θ · (v-cy)/r,  cos θ)
         지면: Z_veh = 0 평면.
 
         Args:
@@ -169,12 +184,27 @@ class CoordTransformer:
 
         Returns:
             (X_fwd, Y_lat): 전방 거리(m, 양수=전방), 측방 거리(m, 양수=우측)
-            지면 교차 불가 시 (inf, inf) 반환.
+            지면 교차 불가 / FOV 밖 / 광선 후방일 때 (inf, inf) 반환.
         """
-        # 정규화 카메라 방향 (Z=1 기준)
-        d_cam = np.array([(u - self.cx) / self.fx,
-                          (v - self.cy) / self.fy,
-                          1.0])
+        du = float(u) - self.cx
+        dv = float(v) - self.cy
+        r_pix = np.hypot(du, dv)
+
+        if r_pix < 1e-9:
+            # 광축 위의 픽셀 — 광선은 정확히 광축(Z_cam) 방향
+            d_cam = np.array([0.0, 0.0, 1.0])
+        else:
+            # Equidistant 역투영 (k=0): θ = r / fx
+            theta = r_pix / self.fx
+            # θ ≥ 90° 면 카메라 측면/뒤편 — 지면에 닿을 일 거의 없음
+            if theta >= np.pi / 2.0 - 1e-3:
+                return float("inf"), float("inf")
+            sin_t = np.sin(theta)
+            cos_t = np.cos(theta)
+            inv_r = 1.0 / r_pix
+            d_cam = np.array([sin_t * du * inv_r,
+                              sin_t * dv * inv_r,
+                              cos_t])
 
         # 차량 프레임 방향
         d_veh = self.R_c2v @ d_cam          # (3,)
