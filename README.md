@@ -1,8 +1,10 @@
-<div align="center">
-
 # 🚗 BSDSystem — Night-time Blind Spot Detection
 
-**Self-Guided Low-Light Object Detection + SORT Tracking + ISO 17387 BSD Logic**
+**What:** 우측 사각지대 차량·보행자 감지 + 3-stage 접근 경보
+
+**Stack:** SGLDet + YOLOv8m + SORT + ROS2 + MORAI 시뮬
+
+**Result:** in-domain test mAP@0.5 = 63.5 % (vehicle 96.3 %, pedestrian 30.8 %)
 
 ---
 
