@@ -36,6 +36,7 @@ projection_model: equidistant
 #   fx = (image_width / 2) / (FOV_h / 2 in rad)
 #      = 640 / (179° / 2 → 1.5621 rad)
 #      ≈ 409.73
+# (MORAI 시뮬 센서 해상도 1280×720 — 학습 데이터 품질 우선)
 intrinsic:
   fx: 409.73         # fisheye 초점거리 x (pixel)
   fy: 409.73         # fisheye 초점거리 y (pixel)
@@ -85,10 +86,11 @@ camera_left:
 # ── BSD 사각지대 판단 기준 ───────────────────────────────────
 # 차량 좌표계 기준 (단위: m)
 bsd_zone:
-  lateral_min:  0.5   # 측방 최소 거리 (차체로부터)
-  lateral_max:  2.5   # 측방 최대 거리
-  forward_max:  3.0   # 전방 한계 (B-필러 기준)
-  rear_max:     6.0   # 후방 한계
+  # ISO 17387 LCDAS Class C + 자차 측면 전체 (사이드미러 사각지대)
+  lateral_min:  0.5   # 측방 최소 (차체 면)
+  lateral_max:  3.5   # 측방 최대 (옆 차로 중심)
+  forward_max:  2.5   # 자차 길이 절반 (사이드미러 사각지대 포함)
+  rear_max:     5.0   # 후방 한계 (일반 OEM 기준)
 
 # ── (하위 호환) 단일 camera 키 — calibration.py / coord_transform.py용 ──
 # Fisheye 모델 기준 (intrinsic 섹션과 동일 값).

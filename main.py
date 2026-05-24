@@ -20,6 +20,15 @@ def parse_args():
     parser.add_argument("--source",       default="0",
                         help="영상 경로 또는 카메라 인덱스 (0,1,...)")
     parser.add_argument("--pretrain",     action="store_true")
+    parser.add_argument("--resume",       action="store_true",
+                        help="(train) checkpoints/last_model.pt 에서 이어서 학습")
+    # train 모드 전달 옵션
+    parser.add_argument("--epochs",       type=int, default=None,
+                        help="(train) 학습 epoch 수. 미지정시 config 값 사용")
+    parser.add_argument("--batch",        type=int, default=None,
+                        help="(train) 배치 크기. 미지정시 config 값 사용")
+    parser.add_argument("--device",       default=None,
+                        help="(train) 디바이스 (cuda/cpu). 미지정시 config 값 사용")
     return parser.parse_args()
 
 
@@ -29,6 +38,14 @@ def run_training(args):
     cmd = [sys.executable, "train.py", "--config", args.config]
     if args.pretrain:
         cmd.append("--pretrain")
+    if args.resume:
+        cmd.append("--resume")
+    if args.epochs is not None:
+        cmd.extend(["--epochs", str(args.epochs)])
+    if args.batch is not None:
+        cmd.extend(["--batch", str(args.batch)])
+    if args.device is not None:
+        cmd.extend(["--device", args.device])
     subprocess.run(cmd)
 
 

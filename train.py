@@ -34,6 +34,8 @@ def parse_args():
     parser.add_argument("--device", default=None)
     parser.add_argument("--pretrain", action="store_true",
                         help="SGLDet 본 학습 전 SCI/SDAP 사전학습 실행")
+    parser.add_argument("--resume", action="store_true",
+                        help="checkpoints/last_model.pt 에서 이어서 학습")
     return parser.parse_args()
 
 
@@ -79,9 +81,37 @@ def train_one_epoch(model, loader, optimizer, device, epoch, writer) -> dict:
     n = max(n, 1)
     avg = {k: v / n for k, v in sums.items()}
 
-    writer.add_scalar("Loss/det",   avg["det"],   epoch)
-    writer.add_scalar("Loss/self",  avg["self"],  epoch)
-    writer.add_scalar("Loss/total", avg["total"], epoch)
+    writer.add_scalar("Loss/train/det",   avg["det"],   epoch)
+    writer.add_scalar("Loss/train/self",  avg["self"],  epoch)
+    writer.add_scalar("Loss/train/total", avg["total"], epoch)
+    return avg
+
+
+@torch.no_grad()
+def validate(model, loader, device, epoch, writer) -> dict:
+    """검증 루프 — overfitting 감지 + 정확한 best_model 선정."""
+    model.eval()
+    sums = {"det": 0.0, "self": 0.0, "total": 0.0}
+    n = 0
+
+    for batch in loader:
+        batch = move_batch_to_device(batch, device)
+        try:
+            out = model(batch)
+            sums["det"]   += out["det_loss"].item()
+            sums["self"]  += out["self_loss"].item()
+            sums["total"] += out["loss"].item()
+            n += 1
+        except Exception as e:
+            print(f"  [Skip val batch] {type(e).__name__}: {e}")
+            continue
+
+    n = max(n, 1)
+    avg = {k: v / n for k, v in sums.items()}
+
+    writer.add_scalar("Loss/val/det",   avg["det"],   epoch)
+    writer.add_scalar("Loss/val/self",  avg["self"],  epoch)
+    writer.add_scalar("Loss/val/total", avg["total"], epoch)
     return avg
 
 
@@ -107,11 +137,20 @@ def main():
         batch_size  = batch_size,
         num_workers = cfg["train"]["num_workers"],
     )
+    val_loader = build_dataloader(
+        root        = cfg["data"]["root"],
+        split       = "val",
+        img_size    = cfg["train"]["img_size"],
+        batch_size  = batch_size,
+        num_workers = cfg["train"]["num_workers"],
+    )
 
     if len(train_loader.dataset) == 0:
         print("\n[Error] 학습 데이터가 없습니다!")
         print(f"  → MORAI 데이터를 {cfg['data']['root']}/dusk(night)/images, labels 에 배치하세요.")
         return
+    if len(val_loader.dataset) == 0:
+        print("\n[경고] 검증 데이터가 비어있습니다 — train loss 만 사용해 best 선정.")
 
     # ── 모델 ──────────────────────────────────────────────────
     model = SGLDetYOLO(
@@ -124,8 +163,26 @@ def main():
     #         (lazy init 시점이 첫 forward여서 optimizer가 모를 수 있음)
     model.warmup(img_size=cfg["train"]["img_size"], device=device)
 
-    # ── 사전학습 ─────────────────────────────────────────────
-    if args.pretrain:
+    # ── Resume: 모델 state 먼저 로드 (optimizer/scheduler는 생성 후) ──
+    ckpt_path = Path("checkpoints/last_model.pt")
+    ckpt = None
+    if args.resume and ckpt_path.exists():
+        ckpt = torch.load(ckpt_path, map_location=device)
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            model.load_state_dict(ckpt["model"])
+            print(f"\n[Resume] checkpoint 로드 (epoch {ckpt['epoch']} 완료, "
+                  f"pretrained={ckpt.get('pretrained', False)})")
+        else:
+            print(f"\n[Resume 실패] {ckpt_path} 는 구버전 포맷. 처음부터 학습합니다.")
+            ckpt = None
+    elif args.resume:
+        print(f"\n[Resume] {ckpt_path} 없음 → 처음부터 학습합니다.")
+
+    # ── 사전학습 (resume 시 이전에 했으면 스킵) ──────────────
+    do_pretrain = args.pretrain and not (ckpt and ckpt.get("pretrained", False))
+    pretrained = (ckpt and ckpt.get("pretrained", False)) or do_pretrain
+
+    if do_pretrain:
         print("\n[Step 1] SCI Enhancer 사전학습...")
         pretrained_e = pretrain_enhancer(
             train_loader, cfg["pretrain"]["enhancer_epochs"], device,
@@ -139,14 +196,16 @@ def main():
             lr=cfg["pretrain"]["pretrain_lr"],
         )
         model.denoiser.load_state_dict(pretrained_d.state_dict())
+        print("\n[Step 3] SGLDet 본 학습 시작\n")
+    elif ckpt and ckpt.get("pretrained", False):
+        print("[Resume] 이전 학습이 pretrain 완료 상태 — Enhancer/Denoiser freeze 재적용")
 
-        # 보조 모듈 freeze (사전학습 가중치 보존)
+    # Enhancer/Denoiser freeze (pretrain 했거나 이전에 했던 경우)
+    if pretrained:
         for p in model.enhancer.parameters(): p.requires_grad = False
         for p in model.denoiser.parameters(): p.requires_grad = False
 
-        print("\n[Step 3] SGLDet 본 학습 시작\n")
-
-    # ── Optimizer / Scheduler ────────────────────────────────
+    # ── Optimizer / Scheduler (freeze 적용 후 생성) ──────────
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.SGD(
         trainable,
@@ -154,29 +213,71 @@ def main():
         momentum     = cfg["train"]["momentum"],
         weight_decay = cfg["train"]["weight_decay"],
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    # ── Warmup + Cosine (논문 4.2 절: warmup 10% + cosine one-cycle) ─
+    warmup_epochs = min(cfg["train"].get("warmup_epochs", max(1, epochs // 10)), epochs - 1)
+    warmup  = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_epochs)
+    cosine  = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(1, epochs - warmup_epochs))
+    scheduler = optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+    print(f"  Scheduler: LinearLR({warmup_epochs} ep warmup) → "
+          f"CosineAnnealingLR({epochs - warmup_epochs} ep)")
 
     writer = SummaryWriter(log_dir="logs/tensorboard")
     Path("checkpoints").mkdir(exist_ok=True)
 
     best_loss = float("inf")
+    has_val = len(val_loader.dataset) > 0
+    start_epoch = 1
 
-    for epoch in range(1, epochs + 1):
+    # ── Resume: optimizer/scheduler state 복원 ───────────────
+    if ckpt is not None:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            scheduler.load_state_dict(ckpt["scheduler"])
+            start_epoch = ckpt["epoch"] + 1
+            best_loss = ckpt["best_loss"]
+            print(f"[Resume] optimizer/scheduler 복원 → "
+                  f"epoch {start_epoch} 부터 재개 (best_loss={best_loss:.4f})")
+        except (ValueError, KeyError) as e:
+            print(f"[Resume 경고] optimizer/scheduler 복원 실패 ({e}) — "
+                  f"모델 weight만 복원하고 epoch 1 부터 재학습")
+
+    for epoch in range(start_epoch, epochs + 1):
         t0 = time.time()
-        m = train_one_epoch(model, train_loader, optimizer, device, epoch, writer)
+        tr = train_one_epoch(model, train_loader, optimizer, device, epoch, writer)
+        if has_val:
+            va = validate(model, val_loader, device, epoch, writer)
         scheduler.step()
         dt = time.time() - t0
 
-        print(f"Epoch [{epoch:3d}/{epochs}] "
-              f"total={m['total']:.4f}  det={m['det']:.4f}  "
-              f"self={m['self']:.4f}  ({dt:.1f}s)")
+        if has_val:
+            print(f"Epoch [{epoch:3d}/{epochs}] "
+                  f"train={tr['total']:.4f}  val={va['total']:.4f}  "
+                  f"(det={va['det']:.4f} self={va['self']:.4f})  ({dt:.1f}s)")
+        else:
+            print(f"Epoch [{epoch:3d}/{epochs}] "
+                  f"total={tr['total']:.4f}  det={tr['det']:.4f}  "
+                  f"self={tr['self']:.4f}  ({dt:.1f}s)")
 
-        if m["total"] < best_loss:
-            best_loss = m["total"]
+        # best 선정 — val 가능하면 val loss, 아니면 train loss
+        score = va["total"] if has_val else tr["total"]
+        if score < best_loss:
+            best_loss = score
             torch.save(model.state_dict(), "checkpoints/best_model.pt")
-            print(f"  ✓ best_model.pt 저장 (loss={best_loss:.4f})")
+            label = "val" if has_val else "train"
+            print(f"  ✓ best_model.pt 저장 ({label} loss={best_loss:.4f})")
 
-        torch.save(model.state_dict(), "checkpoints/last_model.pt")
+        # last_model.pt: 전체 상태 저장 (resume 용)
+        torch.save({
+            "epoch":      epoch,
+            "model":      model.state_dict(),
+            "optimizer":  optimizer.state_dict(),
+            "scheduler":  scheduler.state_dict(),
+            "best_loss":  best_loss,
+            "pretrained": pretrained,
+        }, "checkpoints/last_model.pt")
 
     writer.close()
     print(f"\n학습 완료! best loss: {best_loss:.4f}")

@@ -6,9 +6,21 @@ checkpoints/
 *.onnx
 *.engine
 
-# ── 학습 로그 ─────────────────────────────────────────────────
+# ── 학습 로그 / 평가 출력 ─────────────────────────────────────
 logs/
 experiments/
+# ultralytics val/train 자동 생성
+runs/
+
+# ── 평가 / 데모 임시 파일 ─────────────────────────────────────
+eval_*.txt
+eval_*.yaml
+demo_output/
+demo_tracker/
+demo_*.mp4
+demo_*.gif
+# README가 참조하는 대표 데모 GIF — commit 포함
+!demo_tracker.gif
 
 # ── Python ────────────────────────────────────────────────────
 __pycache__/

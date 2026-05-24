@@ -1,17 +1,15 @@
 """
-BSD DeepNight ROS2 노드 (두 카메라 지원)
+BSD DeepNight ROS2 노드 (우측 BSD 카메라)
 =========================================
-MORAI Camera-1(우측) + Camera-2(좌측) → SGLDet 추론 → BSD 경고 + 시각화
+MORAI Camera-1 (우측 BSD, fisheye 179°) → SGLDet 추론 → BSD 경고 + 시각화
 
 Subscribed topics:
   /morai/camera_right/image_raw (sensor_msgs/Image)  ← Camera-1 (우측)
-  /morai/camera_left/image_raw  (sensor_msgs/Image)  ← Camera-2 (좌측)
 
 Published topics:
-  /bsd/detections      (vision_msgs/Detection2DArray)
-  /bsd/warning         (std_msgs/String : "SAFE"/"WARNING"/"DANGER")
-  /bsd/visualization_right (sensor_msgs/Image)
-  /bsd/visualization_left  (sensor_msgs/Image)
+  /bsd/detections     (vision_msgs/Detection2DArray) : 검출 결과
+  /bsd/warning        (std_msgs/String)              : "SAFE" / "WARNING" / "DANGER"
+  /bsd/visualization  (sensor_msgs/Image)            : 시각화 이미지
 
 실행 예시:
   ros2 run bsd_deepnight detector_node
@@ -100,8 +98,9 @@ class BSDDetectorNode(Node):
             mode="auto",
         )
 
-        # SORT 트래커 (우측 카메라 1대 사용)
+        # SORT 트래커 (우측 카메라 1대)
         self.tracker_right = SORTTracker(max_age=3, min_hits=1, iou_threshold=0.3)
+        self.tracker_left  = None   # 좌측 미사용 (확장 대비 placeholder)
 
         # BSD 인터페이스 (두 카메라 CoordTransformer 포함)
         self.bsd = BSDInterface(camera_config)

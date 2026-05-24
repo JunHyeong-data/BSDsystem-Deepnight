@@ -61,12 +61,12 @@ IMG_W   = 1280
 IMG_H   = 720
 FOV_HALF_RAD = np.deg2rad(89.5)   # 수평 FOV 179° / 2 — 광선 가시 한계
 
-MOUNT       = np.array([2.150, 0.900, 0.550])  # 우측 BSD 카메라 장착 위치 (m)
+MOUNT       = np.array([2.150, -0.900, 0.550])  # 우측 BSD 카메라 장착 위치 (m, MORAI 차량 frame: Y=left)
 PITCH_DEG   = 15.0
-YAW_DEG     = 90.0
+YAW_DEG     = 270.0
 
 SYNC_TOL    = 0.15    # 동기화 허용 오차 (초)
-MIN_AREA    = 800     # instance mask 최소 픽셀 면적
+MIN_AREA    = 800     # instance mask 최소 픽셀 면적 (1280×720 기준)
 
 # Fisheye 유효 영역 반지름 = fx · θ_max ≈ 409.73 · 1.562 ≈ 640
 FISHEYE_CX, FISHEYE_CY, FISHEYE_R = 640, 360, 640
@@ -86,7 +86,7 @@ def _Ry(d):
                      [0, 1, 0],
                      [-np.sin(t), 0, np.cos(t)]], dtype=float)
 
-_R_CAM_BASE = np.array([[0, 0, 1], [1, 0, 0], [0, -1, 0]], dtype=float)
+_R_CAM_BASE = np.array([[0, 0, 1], [-1, 0, 0], [0, -1, 0]], dtype=float)
 _R_C2V = _Rz(YAW_DEG) @ _Ry(PITCH_DEG) @ _R_CAM_BASE
 _R_V2C = _R_C2V.T
 
@@ -104,10 +104,12 @@ def world_to_pixel(obj_pos, ego_pos, ego_heading_deg):
     핀홀 투영(u = fx·X/Z + cx)과 달리 cam[2] < 0 (광축 뒤)이라도
     θ < FOV/2 인 한 가시. 단 θ > 89.5°(FOV 한계)면 None.
 
-    MORAI heading 가정: 0 = North(북쪽), 시계방향 양수.
-    # TODO: `ros2 topic echo /Ego_topic` 으로 실제 확인 필요.
-    #   차량이 북쪽을 향할 때 heading ≈ 0 이면 맞음.
-    #   동쪽(East)이 0이라면 h = np.deg2rad(ego_heading_deg - 90) 으로 수정.
+    MORAI heading 규약 (시각 검증 2026-05-22):
+        0° = East(+X world), 반시계 양수 (ROS REP-103 / 수학 표준).
+        90° = North, 180° = West, 270° = South.
+        h = deg2rad(heading). 그러면
+        forward = (cos h, sin h), left = (-sin h, cos h) in world ENU.
+        Vehicle frame: X=forward, Y=left, Z=up (right-handed).
     """
     dx = obj_pos.x - ego_pos.x   # East
     dy = obj_pos.y - ego_pos.y   # North
@@ -115,8 +117,8 @@ def world_to_pixel(obj_pos, ego_pos, ego_heading_deg):
 
     h = np.deg2rad(ego_heading_deg)
     veh = np.array([
-        dx * np.sin(h) + dy * np.cos(h),   # X 전방
-        dx * np.cos(h) - dy * np.sin(h),   # Y 우측
+        dx * np.cos(h) + dy * np.sin(h),   # X 전방
+        -dx * np.sin(h) + dy * np.cos(h),  # Y 좌측 (Y=left, ROS 표준)
         dz,
     ])
 
@@ -142,9 +144,13 @@ def world_to_pixel(obj_pos, ego_pos, ego_heading_deg):
 # ── Instance Mask → 2D bbox ───────────────────────────────────────────────────
 
 def extract_bboxes(mask_bgr):
-    """Instance mask → [(x1,y1,x2,y2), ...] 픽셀 bbox 목록."""
+    """Instance mask → [(x1,y1,x2,y2), ...] 픽셀 bbox 목록.
+
+    자차 본체 mask 는 dominant BGR=(0,0,0) (검정) 으로 publish 되므로 제외.
+    """
     white   = np.all(mask_bgr >= 240, axis=2)
-    obj_msk = (~white).astype(np.uint8) * 255
+    near_black = np.all(mask_bgr <= 5, axis=2)        # 자차 본체
+    obj_msk = ((~white) & (~near_black)).astype(np.uint8) * 255
 
     roi = np.zeros(mask_bgr.shape[:2], dtype=np.uint8)
     cv2.circle(roi, (FISHEYE_CX, FISHEYE_CY), FISHEYE_R, 255, -1)
@@ -163,34 +169,76 @@ def extract_bboxes(mask_bgr):
     return bboxes
 
 
+class _Vec3:
+    """obj.position 호환 가벼운 래퍼 (world_to_pixel 가 .x, .y, .z 접근)."""
+    __slots__ = ("x", "y", "z")
+    def __init__(self, x, y, z):
+        self.x = x; self.y = y; self.z = z
+
+
+def _vehicle_center(obj):
+    """MORAI npc position = 차량 forward 끝 (검증 2026-05-21).
+    실제 차량 mass center 로 보정: position - forward * size.x / 2.
+    heading 규약: East=0, CCW+ (ROS 표준) → forward_world = (cos h, sin h).
+    """
+    h = np.deg2rad(obj.heading)
+    fwd_x = np.cos(h); fwd_y = np.sin(h)
+    half_len = obj.size.x / 2.0
+    return _Vec3(
+        obj.position.x - fwd_x * half_len,
+        obj.position.y - fwd_y * half_len,
+        obj.position.z,
+    )
+
+
 def assign_classes(obj_msg, bboxes, ego_pos, ego_heading):
     """
     GT 객체 3D 위치 → 이미지 투영 → instance bbox에 클래스 할당.
 
+    NPC 는 차량 size 로 mass center 보정 후 투영.
+    매칭이 직접 포함이 안 되면 가장 가까운 bbox center 와의 거리 (tol=80px) 로 fallback.
+
     Returns:
         [(cls_id, (x1,y1,x2,y2)), ...]
     """
+    TOL_PX = 80   # nearest-bbox fallback 허용 거리 (vehicle 전용)
+
+    def _try_match(px, cls_id, allow_fallback=True):
+        # 1) 포함 매칭
+        for i, (x1, y1, x2, y2) in enumerate(bboxes):
+            if i not in assigned and x1 <= px[0] <= x2 and y1 <= px[1] <= y2:
+                assigned[i] = cls_id
+                return True
+        # 2) 가장 가까운 bbox center 매칭 (fallback, vehicle 만)
+        if not allow_fallback:
+            return False
+        best_d, best_i = TOL_PX, None
+        for i, (x1, y1, x2, y2) in enumerate(bboxes):
+            if i in assigned:
+                continue
+            cxb = (x1 + x2) * 0.5; cyb = (y1 + y2) * 0.5
+            d = ((cxb - px[0])**2 + (cyb - px[1])**2) ** 0.5
+            if d < best_d:
+                best_d, best_i = d, i
+        if best_i is not None:
+            assigned[best_i] = cls_id
+            return True
+        return False
+
     assigned = {}   # bbox_idx → cls_id
 
-    # pedestrian 우선 처리
+    # pedestrian (작은 객체) — 직접 포함만, fallback 없음 (차량 bbox 오인 방지)
     for obj in obj_msg.pedestrian_list:
         px = world_to_pixel(obj.position, ego_pos, ego_heading)
-        if px is None:
-            continue
-        for i, (x1, y1, x2, y2) in enumerate(bboxes):
-            if i not in assigned and x1 <= px[0] <= x2 and y1 <= px[1] <= y2:
-                assigned[i] = 1
-                break
+        if px is None: continue
+        _try_match(px, 1, allow_fallback=False)
 
-    # npc (차량 전체 → vehicle 0)
+    # npc (차량, 큰 객체) — fallback 허용 (mask fragmented 대응)
     for obj in obj_msg.npc_list:
-        px = world_to_pixel(obj.position, ego_pos, ego_heading)
-        if px is None:
-            continue
-        for i, (x1, y1, x2, y2) in enumerate(bboxes):
-            if i not in assigned and x1 <= px[0] <= x2 and y1 <= px[1] <= y2:
-                assigned[i] = 0
-                break
+        center = _vehicle_center(obj)
+        px = world_to_pixel(center, ego_pos, ego_heading)
+        if px is None: continue
+        _try_match(px, 0, allow_fallback=True)
 
     return [(cls, bboxes[i]) for i, cls in assigned.items()]
 

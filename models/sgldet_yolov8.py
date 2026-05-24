@@ -338,8 +338,9 @@ class SGLDetYOLO(nn.Module):
     # Forward
     # -----------------------------------------------------------------------
     def forward(self, batch_or_image, **kwargs):
-        # ── 추론 모드 ────────────────────────────────────────────────
-        if isinstance(batch_or_image, torch.Tensor) or not self.training:
+        # ── 추론 모드: Tensor 입력일 때만 ────────────────────────────
+        # (dict 입력은 train/val 둘 다 loss 계산 모드로 처리)
+        if isinstance(batch_or_image, torch.Tensor):
             self._features.clear()
             try:
                 return self.detector(batch_or_image)
