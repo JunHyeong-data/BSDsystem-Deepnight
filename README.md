@@ -4,19 +4,6 @@
 
 **Self-Guided Low-Light Object Detection + SORT Tracking + ISO 17387 BSD Logic**
 
-야간 사각지대 차량/보행자 감지를 위한 End-to-End 인지 파이프라인
-
-<p>
-  <img src="https://img.shields.io/badge/Python-3.10-blue?logo=python" />
-  <img src="https://img.shields.io/badge/PyTorch-2.x-red?logo=pytorch" />
-  <img src="https://img.shields.io/badge/YOLOv8m-Ultralytics-yellow" />
-  <img src="https://img.shields.io/badge/ROS2-Humble-22314E?logo=ros" />
-  <img src="https://img.shields.io/badge/Simulator-MORAI-success" />
-  <img src="https://img.shields.io/badge/License-MIT-green" />
-</p>
-
-</div>
-
 ---
 
 ## ✨ Highlights
