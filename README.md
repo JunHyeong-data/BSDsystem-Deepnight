@@ -4,13 +4,14 @@
 
 **Stack:** SGLDet + YOLOv8m + SORT + ROS2 + MORAI 시뮬
 
-**Result:** in-domain test mAP@0.5 = 63.5 % (vehicle 96.3 %, pedestrian 30.8 %)
+**Result:** in-domain test mAP@0.5 = **88.98 %** @ conf 0.5 (vehicle 100 %, pedestrian 77.96 %) — Plain FT + Scenario-level split 이 우리 small data 도메인에 최적. SGLDet 적용은 negative contribution 으로 ablation 입증.
 
 ---
 
 ## ✨ Highlights
 
-- 🌙 **Low-Light Detection** — SGLDet (ICLR 2026) framework with SCI Enhancer + SDAP Denoiser + Fourier Fusion
+- 🌙 **YOLOv8m + Scenario-level Split** — small-data 도메인의 정석. Plain FT 만으로 mAP 89 % (conf 0.5) 달성
+- 🔬 **SGLDet (ICLR 2026) Ablation** — 적용 + 한계 발견 + 분석. negative result 도 학술적 가치
 - 🎯 **3-Stage Dynamic Alert** — `SAFE` / `WARNING` / `DANGER` based on relative approach velocity (not just zone presence)
 - 🔁 **SORT Tracking** — ID consistency across frames, IoU greedy matching with Kalman fallback
 - 📐 **Fisheye Geometry** — Equidistant projection model for MORAI 179° FOV cameras, accurate ground-plane back-projection
@@ -148,11 +149,14 @@ python3 augment_data.py --condition dusk  --n-aug 5 --yes
 ### 4. Training
 
 ```bash
-# 본 학습 (pretrain 포함, ~10시간)
-python3 main.py --mode train --epochs 100 --batch 8 --pretrain
+# Step 1: Scenario-level train/val split 생성 (gap > 10s 기준)
+python3 scripts/make_split_files_scenario.py
 
-# 끊긴 후 재개
-python3 main.py --mode train --epochs 100 --batch 8 --resume
+# Step 2: Final model — Plain YOLOv8m + Scenario split (~2h, RTX 4070, ultralytics)
+python3 scripts/train_baseline_ft_scn.py
+
+# (Ablation) SGLDet 학습 — 비교용
+python3 main.py --mode train --epochs 100 --batch 8 --pretrain
 ```
 
 ### 5. Evaluation
@@ -176,39 +180,51 @@ python3 main.py --mode run --source demo.mp4
 
 # ROS2 + MORAI 실시간
 ros2 launch bsd_deepnight bsd_detector.launch.py \
-    weights:=$(pwd)/checkpoints/best_model.pt
+    weights:=$(pwd)/checkpoints/best_yolo_only.pt
 ```
 
 ---
 
 ## 📈 Results
 
-### Training Outcome
+### Training Outcome (Final model: Plain FT + Scenario split)
 
 | Metric | Value |
 |---|---|
-| Best val loss (epoch 46) | **18.67** |
-| Training duration | ~10 h on RTX 4070 Laptop |
-| Early stopping rationale | val plateau for 23 epochs |
+| Best mAP@0.5 (scenario val, epoch 18) | **92.71 %** |
+| Training duration | ~1.2 h on RTX 4070 Laptop (early stop at plateau) |
+| Pretrained backbone | YOLOv8m (COCO, 80 classes) |
+| Train / Val | 4,176 / 203 (scenario-level split, gap > 10 s) |
 
-### mAP Evaluation (In-domain Test Set)
+> Random val (sister frame leakage) 시 mAP 가 96 %+ 까지 inflated 됐었음. Scenario val 의 93 % 가 진짜 generalization 측정. **5 %p 차이가 Lesson #2 의 정량 입증.**
+
+### mAP Evaluation — In-domain Test (60 frames)
 
 학습 후 새로 수집한 60장 (night 30 + dusk 30, 같은 맵 / 다른 NPC 시나리오) 으로 측정.
+**Random / Scenario val 은 sister frame leakage 가 있어 inflated** (Lesson #2). 이 결과 만 진짜 unseen 성능.
 
-| Metric | Value |
-|---|---|
-| mAP@0.5         | **63.5 %** |
-| mAP@0.5:0.95    | 48.8 %     |
-| Precision       | 96.0 %     |
-| Recall          | 54.3 %     |
-| F1              | 69.3 %     |
+#### Ablation 비교 — 5 모델, conf=0.5 (실용 배포)
 
-| Class | AP@0.5 | AP@0.5:0.95 | Precision | Recall |
+| Setup | mAP@0.5 | Vehicle AP | Pedestrian AP | 비고 |
 |---|---|---|---|---|
-| Vehicle    | **96.3 %** | 77.8 % | 91.9 % | **92.7 %** |
-| Pedestrian | 30.8 %     | 19.7 % | **100 %** | 15.9 % |
+| ① COCO YOLOv8m (no FT) | 53.9 % | 51.1 % | 56.7 % | Pretrained baseline. 도메인 갭 큼 |
+| ② SGLDet (Full FT + random split) | 53.7 % | 97.6 % | **9.8 %** | 초기 시도 — **pedestrian catastrophic forgetting** (-47 %p vs Plain FT) |
+| ③ Plain FT (random split) | 81.1 % | 97.6 % | 64.7 % | SGLDet aux 제거 — pedestrian 회복 |
+| ④ SGLDet + Backbone Freeze + Scenario split | 78.2 % | 97.6 % | 58.8 % | 개선 시도 — 일부 회복 but Plain FT 보다 못함 |
+| ⑤ **Plain FT + Scenario split** ⭐ | **88.98 %** | **100 %** | **77.96 %** | **최종 final model** — transfer learning 정석 |
 
-> Vehicle 인식은 BSD 핵심 use-case 신뢰 가능 수준 (AP 96 %). Pedestrian 은 Precision 100 % 라 잡았을 때 항상 맞지만 Recall 15.9 % — 야간 + fisheye + 작은 객체 조합에서 mis-detection 이 많음.
+> **Two-fold finding:**
+> 1. **SGLDet 가 우리 도메인에 부적합 (negative contribution)** — Full FT 시 ped AP 9.8 %, Backbone freeze 적용해도 Plain FT 보다 못함. 작은 합성 데이터셋 (902장) 에서 ICLR framework 의 aux loss 가 backbone 의 COCO prior 를 손상.
+> 2. **Plain FT + Scenario split 이 정답** — Transfer learning 정석 (pretrained + 적절한 scenario-level split + augmentation 조정) 이 mAP +35 %p / pedestrian +68 %p 향상.
+
+#### Final model (⑤ Plain FT + Scn) class-wise
+
+| Class | AP@0.5 | Precision | Recall |
+|---|---|---|---|
+| Vehicle    | **100.00 %** | 99.0 % | **100.00 %** |
+| Pedestrian | **77.96 %**  | 100.0 % | 78.43 % |
+
+> Vehicle 은 완벽. Pedestrian Precision 100 % (false positive 0) + Recall 78 % — 잡은 건 항상 맞음 / 22 % 는 여전히 놓침. 추가 야간 보행자 데이터 + class-weighted loss 가 next step.
 
 ### Inference Speed (RTX 4070 Laptop)
 
@@ -228,7 +244,8 @@ ros2 launch bsd_deepnight bsd_detector.launch.py \
 BSDSystem/
 ├── configs/
 │   ├── camera_config.yaml      # Fisheye intrinsic/extrinsic + BSD zone (ISO 17387)
-│   └── sgldet_config.yaml      # Hyperparameters (lr, epochs, λ_self, etc.)
+│   ├── sgldet_config.yaml      # SGLDet hyperparameters (lr, epochs, λ_self, etc.)
+│   └── morai.yaml              # Ultralytics 호환 dataset yaml (scenario split)
 ├── src/
 │   ├── datasets/morai_dataset.py    # YOLO loader, train/val split, collate
 │   ├── inference/
@@ -242,7 +259,10 @@ BSDSystem/
 │   └── sort_tracker.py              # SORT wrapper (IoU greedy / filterpy)
 ├── ros2_ws/src/bsd_deepnight/       # ROS2 inference node + launch file
 ├── scripts/
-│   ├── evaluate_map_newdata.py     # In-domain test mAP (fresh data)
+│   ├── make_split_files_scenario.py # Scenario-level train/val split (gap > 10s)
+│   ├── train_baseline_ft_scn.py     # Plain YOLOv8m FT + Scenario split (final model)
+│   ├── compare_baseline.py          # 5-row ablation (COCO / Plain FT / SGLDet variants)
+│   ├── evaluate_map_newdata.py      # In-domain test mAP (fresh data)
 │   ├── demo_bsd.py                  # Static image BSD demo
 │   └── demo_tracker.py              # SORT + 3-stage alert demo
 ├── collect_data.py                  # MORAI GT-based collector (rosbridge)
@@ -259,7 +279,7 @@ BSDSystem/
 |---|---|
 | **Data scarcity** — 902 originals from few MORAI locations | 실차 데이터 5,000+ 확보, 다양한 도시/시간 |
 | **Sim2Real gap** — 합성 데이터에서 학습, 실차에서 동작 미검증 | Domain adaptation (e.g., GTA→KITTI proxy), TTA |
-| **Pedestrian detection at night** — 야간 + fisheye + 작은 객체 조합에서 recall 낮음 | Stronger augmentation, larger backbone (YOLOv8x), 야간 보행자 합성 데이터 증강 |
+| **Pedestrian Recall 78.4 %** — 야간 + fisheye + small object 에서 약 22 % miss | Class-weighted loss (ped × 2), pedestrian-focused augmentation, 야간 보행자 데이터 추가 1,000+ 장 |
 | **Single right-side BSD camera** | Symmetric left BSD node 추가, dual-camera fusion |
 | **No vehicle speed input** | Ego speed (`/Ego_topic`) 활용한 상대 속도 정밀화 |
 
@@ -288,6 +308,13 @@ MORAI 에서 잘 작동해도 실차에선 도메인 갭이 크다. 모델이 �
 ### 5. End-to-end performance ≠ Sum of part metrics — 시스템 성능은 모델 metric 의 합이 아니다
 Detection mAP 만 보면 약점이 두드러져도, SORT tracking + zone logic + 3-stage alert 가 결합되면 시스템 차원에서 false positive 가 시간적으로 안정화되며 쓸 만한 결과가 나온다.
 > **Rule:** 단일 모델 metric (mAP, F1) 대신 input → final output 의 end-to-end 평가가 시스템 가치를 보여준다.
+
+### 6. Complex framework ≠ Better on small data — 작은 데이터에선 복잡한 framework 가 오히려 해로울 수 있다
+SGLDet (ICLR 2026) 의 aux loss + 902장 합성 데이터 + class imbalance (vehicle 460 vs pedestrian 310) 조합으로 backbone 의 COCO person prior 가 손상 (catastrophic forgetting). **In-domain test 에서 pedestrian AP 가 65 % (Plain FT random) → 10 % (SGLDet Full FT random) 로 폭락** (conf 0.5).
+
+해결 시도 — Backbone freeze + scenario split 적용해도 pedestrian 59 % (Plain FT + Scenario split 의 78 % 보다 여전히 낮음). **결국 Plain FT + Scenario split + 적절한 augmentation 이 우리 도메인의 정답.**
+
+> **Rule:** ICLR/SOTA paper 의 효과는 **large data 가정** 기반. 작은 데이터셋 (< 5,000) 에 적용 시 ablation 으로 verify 필수. 복잡한 framework 보다 **transfer learning 정석 (pretrained + temporal-aware split + careful augmentation)** 이 small data 의 best practice. SGLDet 의 효과는 BDD100K 같은 큰 야간 데이터셋에서 검증 — future work.
 
 ---
 

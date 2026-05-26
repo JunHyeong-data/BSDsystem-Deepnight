@@ -1,0 +1,11 @@
+# ultralytics 호환 데이터셋 yaml — baseline fine-tune 용
+# scripts/make_split_files.py 로 train.txt / val.txt 먼저 생성 후 사용
+
+path: /home/inhafvt020/BSDSystem
+train: data/morai/train.txt
+val: data/morai/val.txt
+
+nc: 2
+names:
+  0: vehicle
+  1: pedestrian

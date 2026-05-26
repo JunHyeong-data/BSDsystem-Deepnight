@@ -36,6 +36,13 @@ def parse_args():
                         help="SGLDet 본 학습 전 SCI/SDAP 사전학습 실행")
     parser.add_argument("--resume", action="store_true",
                         help="checkpoints/last_model.pt 에서 이어서 학습")
+    parser.add_argument("--freeze-backbone", action="store_true",
+                        help="YOLOv8m backbone (layer 0~9, CSPDarknet) freeze "
+                             "— small data 에서 COCO prior 보존")
+    parser.add_argument("--suffix", default="",
+                        help="checkpoint 이름 접미사 (e.g. '_freeze' → best_model_freeze.pt)")
+    parser.add_argument("--patience", type=int, default=0,
+                        help="early stopping patience (0=비활성). best_loss 가 N epoch 연속 갱신 안 되면 학습 종료")
     return parser.parse_args()
 
 
@@ -205,6 +212,17 @@ def main():
         for p in model.enhancer.parameters(): p.requires_grad = False
         for p in model.denoiser.parameters(): p.requires_grad = False
 
+    # ── Backbone freeze (옵션) — small data 에서 COCO prior 보존 ─
+    if args.freeze_backbone:
+        # YOLOv8m: layer 0~9 = Backbone (CSPDarknet), 10~21 = Neck, 22 = Head
+        for i in range(10):
+            for p in model.detector.model[i].parameters():
+                p.requires_grad = False
+        n_frozen = sum(p.numel() for p in model.detector.parameters() if not p.requires_grad)
+        n_total  = sum(p.numel() for p in model.detector.parameters())
+        print(f"[Freeze] Backbone (layer 0~9): {n_frozen:,}/{n_total:,} params frozen "
+              f"({100*n_frozen/n_total:.1f}%)")
+
     # ── Optimizer / Scheduler (freeze 적용 후 생성) ──────────
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.SGD(
@@ -230,6 +248,7 @@ def main():
     best_loss = float("inf")
     has_val = len(val_loader.dataset) > 0
     start_epoch = 1
+    epochs_since_best = 0  # early stopping counter
 
     # ── Resume: optimizer/scheduler state 복원 ───────────────
     if ckpt is not None:
@@ -265,9 +284,14 @@ def main():
         score = va["total"] if has_val else tr["total"]
         if score < best_loss:
             best_loss = score
-            torch.save(model.state_dict(), "checkpoints/best_model.pt")
+            epochs_since_best = 0
+            torch.save(model.state_dict(), f"checkpoints/best_model{args.suffix}.pt")
             label = "val" if has_val else "train"
-            print(f"  ✓ best_model.pt 저장 ({label} loss={best_loss:.4f})")
+            print(f"  ✓ best_model{args.suffix}.pt 저장 ({label} loss={best_loss:.4f})")
+        else:
+            epochs_since_best += 1
+            if args.patience > 0:
+                print(f"  · best 미갱신 {epochs_since_best}/{args.patience}")
 
         # last_model.pt: 전체 상태 저장 (resume 용)
         torch.save({
@@ -277,7 +301,13 @@ def main():
             "scheduler":  scheduler.state_dict(),
             "best_loss":  best_loss,
             "pretrained": pretrained,
-        }, "checkpoints/last_model.pt")
+        }, f"checkpoints/last_model{args.suffix}.pt")
+
+        # ── Early stopping ──────────────────────────────────────
+        if args.patience > 0 and epochs_since_best >= args.patience:
+            print(f"\n[EarlyStopping] best_loss={best_loss:.4f} 이 "
+                  f"{args.patience} epoch 연속 미갱신 — 학습 종료 (epoch {epoch}/{epochs})")
+            break
 
     writer.close()
     print(f"\n학습 완료! best loss: {best_loss:.4f}")

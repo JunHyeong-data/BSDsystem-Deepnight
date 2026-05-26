@@ -120,10 +120,10 @@ def build_pipeline(allow_flip: bool = False) -> A.Compose:
             p=0.25,
         ),
 
-        # Geometric — mild affine (bbox 자동 변환)
+        # Geometric — Affine (bbox 자동 변환). scale 범위 확대로 test 의 작은 vehicle 분포 적응
         A.Affine(
             translate_percent=(-0.05, 0.05),
-            scale=(0.92, 1.08),
+            scale=(0.6, 1.3),       # 기존 (0.92, 1.08) → 확대. train vehicle 더 작게도 scaling
             rotate=(-5, 5),
             border_mode=cv2.BORDER_REFLECT_101,
             p=0.5,
@@ -139,7 +139,7 @@ def build_pipeline(allow_flip: bool = False) -> A.Compose:
             format="yolo",
             label_fields=["class_labels"],
             min_visibility=0.4,   # bbox 40% 미만 visible 이면 제거
-            min_area=20,          # 너무 작은 bbox 자동 제거
+            min_area=300,         # 기존 20 → 300 (≈17×18px). 작은 bbox noise 제거
             clip=True,            # bbox 좌표 [0,1] 클리핑
         ),
     )

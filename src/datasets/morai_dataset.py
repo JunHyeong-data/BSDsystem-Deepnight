@@ -51,8 +51,31 @@ class MoraiDataset(Dataset):
               f"from {self.conditions}")
 
     def _load_samples(self, train_ratio: float) -> list:
-        orig_map: dict[str, dict] = {}   # stem → sample
-        aug_map:  dict[str, list] = {}   # orig_stem → [aug samples]
+        # ── train.txt / val.txt 우선 사용 (외부 split 파일 — Lesson #2 적용) ──
+        split_file = self.root / f"{self.split}.txt"
+        if split_file.exists():
+            samples = []
+            for line in split_file.read_text().strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                img_path = Path(line)
+                if not img_path.is_absolute():
+                    img_path = (self.root / img_path).resolve()
+                cond = img_path.parent.parent.name  # .../night/images/X.jpg → night
+                lbl_path = img_path.parent.parent / "labels" / (img_path.stem + ".txt")
+                samples.append({
+                    "img": img_path,
+                    "lbl": lbl_path if lbl_path.exists() else None,
+                    "condition": cond,
+                })
+            print(f"[MoraiDataset] {self.split}.txt 사용 ({len(samples)} samples) — "
+                  f"외부 split (scenario-aware 가능)")
+            return samples
+
+        # ── Fallback: 자체 random shuffle split (Lesson #2 위반, 옛 방식) ──
+        orig_map: dict[str, dict] = {}
+        aug_map:  dict[str, list] = {}
 
         for cond in self.conditions:
             img_dir = self.root / cond / "images"
@@ -72,14 +95,11 @@ class MoraiDataset(Dataset):
                 }
                 stem = img_path.stem
                 if "_aug" in stem:
-                    # "_aug0", "_aug1" ... → base stem
                     base = "_aug".join(stem.split("_aug")[:-1])
                     aug_map.setdefault(base, []).append(sample)
                 else:
                     orig_map[stem] = sample
 
-        # 원본 기준으로만 셔플 → train/val 분할
-        # aug 파일은 반드시 같은 원본의 split에 귀속 (데이터 누수 방지)
         orig_list = list(orig_map.items())
         random.Random(42).shuffle(orig_list)
 
@@ -93,7 +113,6 @@ class MoraiDataset(Dataset):
                 samples.extend(aug_map.get(stem, []))
             return samples
         else:
-            # val 은 원본만 (증강 이미지 없음)
             return [s for _, s in val_origs]
 
     def __len__(self) -> int:
