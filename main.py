@@ -46,13 +46,12 @@ def run_training(args):
         cmd.extend(["--batch", str(args.batch)])
     if args.device is not None:
         cmd.extend(["--device", args.device])
-    subprocess.run(cmd)
+    subprocess.run(cmd, check=True)
 
 
 def run_inference(args):
     """Part B: 실시간 BSD 추론 파이프라인."""
     import cv2
-    import numpy as np
 
     from src.preprocessing.calibration import CameraCalibration
     from src.inference.detector       import SGLDetInference
@@ -94,7 +93,7 @@ def run_inference(args):
         # 4. BSD 경고 판단
         h, w = frame.shape[:2]
         tracked_objs, any_danger = bsd.process(
-            detections, tracked_ids=track_ids, img_w=w, img_h=h,
+            detections, side="right", tracked_ids=track_ids, img_w=w, img_h=h,
         )
 
         # 5. 시각화

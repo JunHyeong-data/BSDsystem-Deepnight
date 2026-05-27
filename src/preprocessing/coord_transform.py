@@ -314,9 +314,9 @@ class CoordTransformer:
         print(f"{'=' * 50}\n")
 
 
-# ── BSDInterface: 두 카메라 통합 인터페이스 ─────────────────────────────────
+# ── CoordBSDInterface: 두 카메라 통합 인터페이스 (coord_transform 내부 유틸) ──
 
-class BSDInterface:
+class CoordBSDInterface:
     """
     좌·우 두 BSD 카메라의 CoordTransformer를 통합 관리.
 
@@ -403,7 +403,7 @@ if __name__ == "__main__":
 
     # ── BSDInterface 통합 테스트 ──────────────────────────────
     print("\n[BSDInterface 통합 테스트]")
-    bsd = BSDInterface("configs/camera_config.yaml")
+    bsd = CoordBSDInterface("configs/camera_config.yaml")
     fake_dets = [
         {"cx_norm": 0.5, "cy_norm": 0.5, "w_norm": 0.1, "h_norm": 0.15},
         {"cx_norm": 0.3, "cy_norm": 0.7, "w_norm": 0.08, "h_norm": 0.12},
