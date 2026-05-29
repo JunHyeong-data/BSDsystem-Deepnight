@@ -1,21 +1,24 @@
-# 🚗 BSDSystem — Night-time Blind Spot Detection
+# 🚗 BSDSystem — Low-light BSD Full-stack Prototype
 
-**What:** 우측 사각지대 차량·보행자 감지 + 3-stage 접근 경보
+**What:** 야간 사각지대 경보 시스템의 **end-to-end 풀스택 prototype** — Detection + SORT tracking + Fisheye coord transform + 3-stage velocity alert + ROS2 통합
 
-**Stack:** SGLDet + YOLOv8m + SORT + ROS2 + MORAI 시뮬
+**Stack:** YOLOv8m + SORT + Fisheye Equidistant + ROS2 + MORAI sim
 
-**Result:** in-domain test mAP@0.5 = **88.98 %** @ conf 0.5 (vehicle 100 %, pedestrian 77.96 %) — Plain FT + Scenario-level split 이 우리 small data 도메인에 최적. SGLDet 적용은 negative contribution 으로 ablation 입증.
+**Contribution:** **시스템 통합** (모델 SOTA 가 아님). MORAI sim 환경에서 ROS2 노드로 동작하는 BSD 풀스택 prototype 구축 + SGLDet 같은 야간 enhancement framework 의 small-data 적용 한계 ablation 입증. 실세계 배포는 BDD100K 등 야간 데이터셋으로의 transfer learning 이 next step.
+
+> 본 프로젝트는 **"새로운 야간 detection model"** 을 주장하지 않음. 우리 컨트리뷰션은 **저조도 BSD 시스템의 통합 설계 + 한계 정량화**.
 
 ---
 
 ## ✨ Highlights
 
-- 🌙 **YOLOv8m + Scenario-level Split** — small-data 도메인의 정석. Plain FT 만으로 mAP 89 % (conf 0.5) 달성
-- 🔬 **SGLDet (ICLR 2026) Ablation** — 적용 + 한계 발견 + 분석. negative result 도 학술적 가치
-- 🎯 **3-Stage Dynamic Alert** — `SAFE` / `WARNING` / `DANGER` based on relative approach velocity (not just zone presence)
-- 🔁 **SORT Tracking** — ID consistency across frames, IoU greedy matching with Kalman fallback
-- 📐 **Fisheye Geometry** — Equidistant projection model for MORAI 179° FOV cameras, accurate ground-plane back-projection
-- 🤖 **ROS2 + MORAI** — Real-time inference node, rosbridge integration
+- 🏗 **End-to-end BSD Pipeline** — Detection → Tracking → Coord Transform → 3-stage Alert → ROS2 publish 까지 통합. 부분 모듈 합이 아니라 **시스템으로 동작**하는 prototype
+- 🎯 **3-Stage Dynamic Alert** — `SAFE` / `WARNING` / `DANGER` based on relative approach velocity (Δx/Δt). production path (`main.py --mode run`, ROS2 node) 와 `scripts/demo_tracker.py` 모두 `BSDInterface` 에 통합된 동일 로직 사용
+- 🔁 **SORT Tracking** — ID consistency across frames, IoU greedy matching (Kalman fallback). 트랙별 히스토리로 velocity 추정
+- 📐 **Fisheye Geometry** — MORAI 179° FOV equidistant 역투영 → 차량 프레임 지면점. MORAI 좌수계 quirk 처리 (cv2.Rodrigues 미사용)
+- 🤖 **ROS2 + MORAI Integration** — `morai_msgs` 구독 → BSD 경고 publish (rosbridge). 실시간 동작 (~125 FPS on RTX 4070)
+- 🔬 **SGLDet (ICLR 2026) Ablation** — 야간 enhancement framework 의 small-data 한계 입증 (negative result 도 학술적 가치)
+- 📊 **Validation on MORAI** — 902 frame prototype validation set 으로 in-domain detection 성능 측정 (mAP@0.5 = 88.98%, vehicle 100% / pedestrian 78%). **실세계 일반화는 미검증 — Limitations 섹션 참고**
 
 ---
 
@@ -53,8 +56,8 @@
 │        ▼                                                              │
 │  ┌─────────────┐   ┌──────────┐   ┌───────────┐   ┌──────────────┐  │
 │  │   YOLOv8m   │──►│   SORT   │──►│  Fisheye  │──►│   BSD Logic  │  │
-│  │  Detection  │   │  Tracker │   │   Back-   │   │  (3-stage)   │  │
-│  │  (lightweight)  │  (ID)    │   │ Projection│   │   alert      │  │
+│  │  Detection  │   │  Tracker │   │   Back-   │   │ (3-stage     │  │
+│  │ (lightweight)│  │   (ID)   │   │ Projection│   │  velocity)   │  │
 │  └─────────────┘   └──────────┘   └───────────┘   └──────┬───────┘  │
 │                                                            │          │
 │                                       ┌────────────────────▼────┐    │
@@ -70,7 +73,7 @@
 
 ![BSD 3-stage alert demo](demo_tracker.gif)
 
-> **MORAI live capture (13 frames @ 0.5 s = 5.2 s).** 자차 우측 후방에서 NPC 차량이 점진 가속하며 BSD zone 으로 진입 → 접근 속도가 0.2 m/s 에서 1.6 m/s 로 급증 → DANGER 경보 7 frame 지속 → 차량이 자차를 통과한 뒤 zone 이탈.
+> **`scripts/demo_tracker.py` — MORAI live capture (13 frames @ 0.5 s = 5.2 s).** 자차 우측 후방에서 NPC 차량이 점진 가속하며 BSD zone 으로 진입 → 접근 속도가 0.2 m/s 에서 1.6 m/s 로 급증 → DANGER 경보 7 frame 지속 → 차량이 자차를 통과한 뒤 zone 이탈. 동일한 3-stage velocity 로직이 `main.py --mode run` / ROS2 노드에서도 동작.
 
 ```
 frame 1 ~ 2   🟡 WARNING   approach = +0.0 → +0.2 m/s   (zone 진입, 임계 미만)
@@ -187,7 +190,28 @@ ros2 launch bsd_deepnight bsd_detector.launch.py \
 
 ## 📈 Results
 
-### Training Outcome (Final model: Plain FT + Scenario split)
+> **읽는 순서**: 본 프로젝트의 main contribution 은 시스템 통합. 먼저 **End-to-end systems metrics** 를 보고, 그 다음 보조 evidence 로서 detection mAP / ablation 을 본다.
+
+### 1) End-to-end Systems Performance ⭐
+
+본 시스템이 **풀파이프라인으로 동작한다** 는 증거.
+
+| Metric | Value | 의미 |
+|---|---|---|
+| **End-to-end latency** | **~8 ms / frame** | Camera in → BSD warning out (RTX 4070 Laptop) |
+| **Throughput** | **~125 FPS** | 실시간 (30 FPS 카메라 대비 4× 여유) |
+| **3-stage alert** | SAFE / WARNING / DANGER | velocity Δx/Δt 기반, `BSDInterface` 단일 출처 (production + demo 공통) |
+| **Track ID persistence** | 데모 시퀀스에서 9 frame 동안 동일 ID 유지 | SORT IoU greedy + age-based, 객체별 velocity 누적 가능 |
+| **ROS2 통합** | `/bsd/warning`, `/bsd/detections`, `/bsd/visualization` publish | rosbridge 통해 MORAI 실시간 연동 |
+| **Fisheye → ground 변환** | MORAI 179° equidistant, 좌수계 좌표계 처리 | bbox 하단 중앙점 → 차량 프레임 (X_fwd, Y_lat) m 단위 |
+
+> 이 layer 의 contribution 은 detection model 의 mAP 와 무관. **detector 가 바뀌어도 (e.g. BDD100K-pretrained 로 교체) 위 pipeline 은 그대로 동작.**
+
+### 2) Detection Model (Supporting Evidence)
+
+위 시스템이 동작한다는 걸 보이려면 detector 가 일정 수준 이상이어야 함. 그 검증.
+
+#### Training Outcome (Final model: Plain FT + Scenario split)
 
 | Metric | Value |
 |---|---|
@@ -202,6 +226,9 @@ ros2 launch bsd_deepnight bsd_detector.launch.py \
 
 학습 후 새로 수집한 60장 (night 30 + dusk 30, 같은 맵 / 다른 NPC 시나리오) 으로 측정.
 **Random / Scenario val 은 sister frame leakage 가 있어 inflated** (Lesson #2). 이 결과 만 진짜 unseen 성능.
+
+> **⚠️ Caveat (overfitting risk):** 이 60장도 학습과 동일 MORAI 맵/카메라 설정. 즉 *fully unseen* (외부 시뮬·실세계) 일반화는 미검증. 본 수치는 "같은 도메인 내 새 시나리오" 성능으로만 해석.
+> **Scope note:** BSD 정의상 1차 평가 대상은 `vehicle` (P=99.0%, R=100%). `pedestrian` 결과는 참고용 — 보행자는 본래 BSD 의 주 경고 대상이 아님 (속도가 매우 느려 충돌 위험 평가 기준이 다름).
 
 #### Ablation 비교 — 5 모델, conf=0.5 (실용 배포)
 
@@ -226,7 +253,7 @@ ros2 launch bsd_deepnight bsd_detector.launch.py \
 
 > Vehicle 은 완벽. Pedestrian Precision 100 % (false positive 0) + Recall 78 % — 잡은 건 항상 맞음 / 22 % 는 여전히 놓침. 추가 야간 보행자 데이터 + class-weighted loss 가 next step.
 
-### Inference Speed (RTX 4070 Laptop)
+#### Inference Speed Breakdown (RTX 4070 Laptop)
 
 | Stage | Latency |
 |---|---|
@@ -235,6 +262,8 @@ ros2 launch bsd_deepnight bsd_detector.launch.py \
 | Post-process   | 0.4 ms |
 | SORT update    | <1 ms |
 | **End-to-end** | **~8 ms (≈ 125 FPS)** |
+
+> Detection 이 latency 의 거의 전부 (~88%). 향후 detector 교체 (e.g. YOLOv8n, BDD100K-pretrained) 시 latency profile 만 다시 측정하면 됨.
 
 ---
 
@@ -273,15 +302,46 @@ BSDSystem/
 
 ---
 
+## 🧭 What This Project Is / Is Not
+
+명확한 scope 명시 — 발표·심사 시 오해 방지.
+
+### ✅ What it IS
+- **저조도 BSD 시스템의 통합 prototype**: detection + tracking + coord transform + 3-stage alert + ROS2 가 풀파이프라인으로 동작
+- **MORAI sim 환경 validation**: 902 frame in-domain 데이터로 prototype 의 단위 동작 + 통합 동작 검증
+- **공학적 의사결정의 ablation 입증**: SGLDet 같은 야간 enhancement framework 가 small synthetic data 에서 왜 안 통하는지 5-row ablation 으로 정량 입증
+- **systems-level contribution**: 모듈 합이 아니라 시스템으로서의 가치 (latency, FPS, ROS2 통합, end-to-end alert flow)
+
+### ❌ What it is NOT
+- **새로운 야간 detection model 이 아님**: detector 자체는 표준 YOLOv8m + transfer learning. SGLDet 은 적용 시도했으나 ablation 으로 부적합 입증
+- **실세계 배포 가능한 system 이 아님**: MORAI sim 한정. 실세계 fisheye / 다양한 도로·날씨 일반화는 미검증
+- **detection accuracy 가 main contribution 이 아님**: in-domain 88% 는 prototype 단위 동작 검증용 수치. 실세계 SOTA 비교 대상 아님
+- **보행자 BSD 시스템이 아님**: BSD 정의상 vehicle 류 (자동차·오토바이·자전거) 가 주 대상. pedestrian 결과는 학습 이력 보고용 (BSD scope 외)
+
+### 🎯 Realistic Deployment Path
+1. **Detector 교체** — BDD100K / NightOwls 로 사전학습된 YOLOv8 가중치로 본 pipeline 의 detection module 만 교체
+2. **Real fisheye 카메라 캘리브레이션** — `calibration.py` 에서 OpenCV `cv2.fisheye.calibrate` 로 실 distortion 계수 산출
+3. **Vehicle CAN 신호 통합** — ego speed subscribe → 절대속도 기반 TTC 계산
+4. **Multi-modal 확장** — RGB + thermal IR (ADAS 양산 표준)
+
+위 1~4 모두 본 프로젝트의 pipeline architecture (좌표 변환 / SORT / 3-stage / ROS2 노드) 는 그대로 재사용 가능.
+
+---
+
 ## ⚠️ Limitations & Future Work
 
-| Limitation | Mitigation |
-|---|---|
-| **Data scarcity** — 902 originals from few MORAI locations | 실차 데이터 5,000+ 확보, 다양한 도시/시간 |
-| **Sim2Real gap** — 합성 데이터에서 학습, 실차에서 동작 미검증 | Domain adaptation (e.g., GTA→KITTI proxy), TTA |
-| **Pedestrian Recall 78.4 %** — 야간 + fisheye + small object 에서 약 22 % miss | Class-weighted loss (ped × 2), pedestrian-focused augmentation, 야간 보행자 데이터 추가 1,000+ 장 |
-| **Single right-side BSD camera** | Symmetric left BSD node 추가, dual-camera fusion |
-| **No vehicle speed input** | Ego speed (`/Ego_topic`) 활용한 상대 속도 정밀화 |
+본 시스템은 **MORAI sim 환경 한정 prototype + baseline**. 다음 한계를 명시.
+
+| Limitation | 영향 | Mitigation / 향후 과제 |
+|---|---|---|
+| **Effective dataset size** — 902장 raw 이지만 연속 frame(0.5s 간격)이라 실제 effective scenario 는 ~100–200 수준 | 도메인 내 overfitting 위험. 같은 NPC 차종 반복 학습 | 실차 / 다른 sim 맵 / 다양한 시나리오 5,000+ 확보 |
+| **MORAI sim only — Sim2Real 미검증** | 모델이 학습한 건 "MORAI 렌더러 분포". 실세계 fisheye / 도시환경 일반화 미입증 | Domain adaptation, BDD100K 야간 subset 추가 학습 |
+| **Day vs Night 정량 비교 미수행** | "야간 BSD 가 어렵다" 라는 motivation 이 데이터로 입증 안 됨 | `scripts/evaluate_day_vs_night.py` 로 같은 모델 주간/야간 mAP Δ 측정 예정 |
+| **MORAI 차량 종류 제약** — 트럭 8종, 버스 7종 등 sim 카탈로그 한정 | 학습된 vehicle prior 가 특정 차종에 편향 | 실차 데이터 / 외부 데이터셋 다양화 |
+| **BSD scope mismatch — pedestrian class** | 본래 BSD 는 vehicle 류(자동차·오토바이·자전거) 의 상대속도 경보. 보행자는 BSD 의 주 대상이 아님 (충돌역학 다름) | Vehicle-only 재학습 또는 evaluation 시 vehicle 만 본 metric 보고 |
+| **Undistortion 시각 검증 부재** | MORAI 는 이상적 equidistant (`dist=[0,0,0,0]`) 라 본 파이프라인은 *보정 없이* 작동. 실 fisheye 카메라 사용 시 별도 캘리브레이션·시각 검증 필요 | 격자 패턴 캡처 + 체크보드 보정 시각화 |
+| **Single right-side BSD camera** | 좌측 사각지대 미커버 | Symmetric left BSD node + dual-camera fusion (`BSDInterface.process_both` 인터페이스는 이미 존재) |
+| **No ego vehicle speed input** | 상대속도 추정이 카메라 픽셀 변화 기반(절대속도 모름) | Ego speed (`/Ego_topic`) subscribe → TTC (Time-To-Collision) 계산 |
 
 ---
 
