@@ -35,10 +35,7 @@ data:
   root: "data/morai"
   train_split: 0.8
   val_split: 0.2
-  # BSD 사각지대 영역 정의
-  bsd_lateral_min: 0.5              # 측방 최소 거리 (m)
-  bsd_lateral_max: 2.5              # 측방 최대 거리 (m)
-  bsd_rear_distance: 3.0            # 후방 B-필러 이후 거리 (m)
+  # BSD 사각지대 정의는 configs/camera_config.yaml `bsd_zone` 참고 (런타임 단일 출처)
 
 eval:
   conf_threshold: 0.25

@@ -89,11 +89,20 @@ def run_inference(args):
         sort_input  = bsd.format_sort_input(detections)
         sort_output = tracker.update(sort_input)
         track_ids   = tracker.get_track_ids(sort_output)
+        # SORT 출력은 detection 과 순서/길이가 다를 수 있음.
+        # 정확한 매칭(IoU)을 안 한다면, 최소한 길이만 맞춰 zip 끊김을 막는다.
+        if len(track_ids) != len(detections):
+            track_ids = list(range(len(detections)))
 
-        # 4. BSD 경고 판단
+        # 4. BSD 경고 판단 (velocity-aware 3-stage)
+        # 저장 영상은 CAP_PROP_POS_MSEC (재생기준 ms) 사용해야 dX/dt 정확.
+        # 카메라(stream)면 POS_MSEC 가 0/무의미 → None 으로 두면 perf_counter().
+        pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+        ts_s = (pos_ms / 1000.0) if pos_ms and pos_ms > 0 else None
         h, w = frame.shape[:2]
         tracked_objs, any_danger = bsd.process(
-            detections, side="right", tracked_ids=track_ids, img_w=w, img_h=h,
+            detections, side="right", tracked_ids=track_ids,
+            img_w=w, img_h=h, timestamp_s=ts_s,
         )
 
         # 5. 시각화

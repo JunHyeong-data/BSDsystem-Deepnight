@@ -258,11 +258,9 @@ class CoordTransformer:
         """
         BSD 사각지대 침범 여부 판단.
 
-        사각지대 정의 (MORAI 시뮬레이션 기준):
+        사각지대 정의 (MORAI 시뮬레이션 기준, 실제 값은 camera_config.yaml bsd_zone):
           - 측방 : |Y_lat| ∈ [lateral_min, lateral_max]
-                   (차체 양 옆 0.5 m ~ 2.5 m)
           - 종방향: X_fwd ∈ (-rear_max, +forward_max)
-                   (B-필러 기준 전후 6 m ~ 3 m)
 
         Args:
             X_fwd: 전방 거리 (m, 양수=전방)
